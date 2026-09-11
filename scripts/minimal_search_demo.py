@@ -23,6 +23,9 @@ class LocalSearchEnvironment:
         self.documents = [
             Document("Hamlet", "Hamlet is a tragedy written by William Shakespeare."),
             Document("William Shakespeare", "William Shakespeare wrote Hamlet."),
+            Document("Eiffel Tower", "The Eiffel Tower is located in Paris."),
+            Document("Theory of relativity", "Albert Einstein developed the theory of relativity."),
+            Document("XQZ-17", "According to the fictional test knowledge base, the play XQZ-17 was written by Alice Example."),
         ]
 
     def retrieve(self, queries: list[str], topk: int = 3) -> dict:
