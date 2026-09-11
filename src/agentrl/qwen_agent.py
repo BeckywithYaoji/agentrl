@@ -7,13 +7,13 @@ MODEL = 'mlx-community/Qwen3-0.6B-4bit'
 REVISION = '73e3e38d981303bc594367cd910ea6eb48349da8'
 
 
-def load_qwen(model_id=MODEL):
-    return load(model_id, revision=REVISION if model_id == MODEL else None)
+def load_qwen(model_id=MODEL, adapter_path=None):
+    return load(model_id, revision=REVISION if model_id == MODEL else None, adapter_path=adapter_path)
 
 
 class QwenAgent:
-    def __init__(self, max_tokens=256):
-        self.model, self.tokenizer = load_qwen()
+    def __init__(self, max_tokens=256, adapter_path=None):
+        self.model, self.tokenizer = load_qwen(adapter_path=adapter_path)
         self.max_tokens = max_tokens
 
     def generate(self, messages, stop_actions=True):
