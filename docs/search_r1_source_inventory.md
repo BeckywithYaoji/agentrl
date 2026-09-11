@@ -2,6 +2,16 @@
 
 The upstream source is preserved under `third_party/search-r1/` from the official `main` branch archive. The Git clone transport timed out in this environment, so this vendored snapshot does not contain upstream `.git` metadata; the source URL is `https://github.com/PeterGriffinJin/Search-R1`.
 
+## Provenance
+
+- Official repository: `https://github.com/PeterGriffinJin/Search-R1`
+- Acquisition method: GitHub `main` branch tarball, because Git clone timed out
+- Branch: `main`
+- Upstream commit: `UNKNOWN` (the downloaded archive did not include Git metadata)
+- Acquisition date: `2026-09-11` (local date)
+- Original tarball SHA256: `UNKNOWN` (the transient download was not retained)
+- Current vendored-directory tarball snapshot SHA256: `59ca833d0e57bd224b754870b2b58596d034a8324b57cbe106fde350f4bf9433`
+
 | Area | Source file | Finding |
 |---|---|---|
 | Dataset preprocessing | `scripts/data_process/nq_search.py`, `scripts/data_process/nq.py` | Converts QA records into prompt/reward records; `nq_search.py` adds search-oriented prompts. |
