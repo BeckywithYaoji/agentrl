@@ -8,6 +8,10 @@
 - MLX-LM: `0.31.3`
 - Candidate model: `mlx-community/Qwen3-0.6B-4bit`
 - Resolved revision: `73e3e38d981303bc594367cd910ea6eb48349da8`
+- Milestone 2B uses shared `load_qwen()` with this pinned revision. Chat generation
+  uses `apply_chat_template(..., enable_thinking=False, add_generation_prompt=True)`
+  and `stream_generate` with greedy sampling and 256-token limit. See
+  `milestone2b_results.md` for protocol stopping, evidence injection and real results.
 - `model.safetensors` size: `335450584` bytes
 - `model.safetensors` SHA256: `392e8d466d56100ada00eb82031fb854297fc9e389b7d303eba3af114e87bce2`
 

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 import time
+import sys
+from pathlib import Path
 
-from mlx_lm import generate, load
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from mlx_lm import generate
+from src.agentrl.qwen_agent import load_qwen
 
 
 DEFAULT_MODEL = "mlx-community/Qwen3-0.6B-4bit"
@@ -19,7 +23,7 @@ def main() -> None:
 
     print(f"model: {args.model}")
     start = time.perf_counter()
-    model, tokenizer = load(args.model)
+    model, tokenizer = load_qwen(args.model)
     loaded = time.perf_counter()
     prompt = "Question: What is 2 + 2? Answer briefly."
     output = generate(

@@ -1,0 +1,9 @@
+{
+  "question": "Who wrote the fictional play XQZ-17?",
+  "output": "The fictional play *XQZ-17* is not a real play in the real world. It is a fictional creation by the author **J.K. Rowling**. She wrote the story and the play in the form of *XQZ-17* as part of her *Harry Potter* series. The play is part of the *Harry Potter* universe and is set in the 1980s.",
+  "model": "mlx-community/Qwen3-0.6B-4bit",
+  "revision": "73e3e38d981303bc594367cd910ea6eb48349da8",
+  "max_tokens": 256,
+  "temperature": 0.0,
+  "enable_thinking": false
+}
