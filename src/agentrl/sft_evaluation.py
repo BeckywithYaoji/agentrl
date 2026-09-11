@@ -37,7 +37,7 @@ def evaluate_case(sample, agent, smoke=False):
     retriever = LocalSearchEnvironment() if smoke else ReplayRetriever(sample['metadata']['documents'])
     result = run_agent(sample['question'], agent, retriever, max_search_steps=EVAL_CONFIG['max_search_steps'])
     result.update(id=sample['id'], task_type=sample.get('task_type', 'm2b'), expected_answer=sample['answer'],
-                  requires_search=sample.get('metadata',{}).get('requires_search',True))
+                  requires_search=sample.get('metadata',{}).get('requires_search'))
     text = result['turns'][0]['content']
     result['first_action'] = first_action(text)
     result['search_triggered'] = any(first_action(t['content'])=='search' for t in result['turns'] if t['role']=='assistant')
@@ -51,18 +51,21 @@ def summarize(rows):
     n = len(rows)
     if not n:
         return {'count': 0}
-    tp=sum(r['first_action']=='search' and r['requires_search'] for r in rows)
-    fp=sum(r['first_action']=='search' and not r['requires_search'] for r in rows)
-    fn=sum(r['first_action']!='search' and r['requires_search'] for r in rows)
+    decision_rows=[r for r in rows if isinstance(r['requires_search'], bool)]
+    dn=len(decision_rows)
+    tp=sum(r['first_action']=='search' and r['requires_search'] for r in decision_rows)
+    fp=sum(r['first_action']=='search' and not r['requires_search'] for r in decision_rows)
+    fn=sum(r['first_action']!='search' and r['requires_search'] for r in decision_rows)
     precision=tp/(tp+fp) if tp+fp else 0.
     recall=tp/(tp+fn) if tp+fn else 0.
-    direct=sum(not r['requires_search'] for r in rows)
+    direct=sum(not r['requires_search'] for r in decision_rows)
     return {'count':n, 'protocol_success':sum(r['success'] for r in rows)/n,
         'search_trigger_rate':sum(r['search_triggered'] for r in rows)/n,
-        'search_decision_accuracy':sum(r['first_action']==('search' if r['requires_search'] else 'answer') for r in rows)/n,
+        'search_decision_accuracy':sum(r['first_action']==('search' if r['requires_search'] else 'answer') for r in decision_rows)/dn if dn else None,
         'search_precision':precision, 'search_recall':recall,
         'search_f1':2*precision*recall/(precision+recall) if precision+recall else 0.,
         'answer_em':sum(r['answer_em'] for r in rows)/n, 'token_f1':sum(r['token_f1'] for r in rows)/n,
         'avg_searches':sum(r['search_count'] for r in rows)/n,
         'max_step_failure_rate':sum(r['termination_reason']=='max_search_steps' for r in rows)/n,
-        'direct_search_false_positive_rate':fp/direct if direct else None}
+        'direct_search_false_positive_rate':fp/direct if direct else None,
+        'decision_cases':dn}
