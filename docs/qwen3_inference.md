@@ -7,6 +7,9 @@
 - MLX: installed, package does not expose a version attribute in this environment
 - MLX-LM: `0.31.3`
 - Candidate model: `mlx-community/Qwen3-0.6B-4bit`
+- Resolved revision: `73e3e38d981303bc594367cd910ea6eb48349da8`
+- `model.safetensors` size: `335450584` bytes
+- `model.safetensors` SHA256: `392e8d466d56100ada00eb82031fb854297fc9e389b7d303eba3af114e87bce2`
 
 ## API selected
 
@@ -22,4 +25,4 @@ The model-only smoke test was attempted with a plain text prompt. Chat-template 
 
 ## Current limitation
 
-The Hugging Face snapshot metadata and small files downloaded successfully, but the required `model.safetensors` is 335,450,584 bytes and was not received by either MLX-LM resume download or a direct resumable request within the available network window. Consequently no Qwen3 generation, chat-template inspection, or Search-Agent integration was performed.
+The Hugging Face snapshot is now complete. The required `model.safetensors` is 335,450,584 bytes. The initial download attempt timed out, but the cache later completed and the model loaded successfully, including with `HF_HUB_OFFLINE=1`.
