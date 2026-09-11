@@ -1,0 +1,18 @@
+model: mlx-community/Qwen3-0.6B-4bit
+revision: 73e3e38d981303bc594367cd910ea6eb48349da8
+fine_tune_type: lora
+data: data/sft_tiny
+adapter_path: artifacts/adapters/qwen3_0.6b_tiny
+seed: 42
+num_layers: 16
+batch_size: 1
+grad_accumulation_steps: 1
+learning_rate: 0.0001
+iters: 160
+max_seq_length: 1536
+lora_parameters: {rank: 8, dropout: 0.0, scale: 20.0}
+steps_per_report: 10
+steps_per_eval: 40
+save_every: 160
+val_batches: -1
+grad_checkpoint: true
