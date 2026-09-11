@@ -43,3 +43,9 @@ insufficient and two counterfactual records. It passes protocol/schema validatio
 duplicate checks and statistics; 21 unit tests pass including all previous milestones.
 The implementation now constructs only the requested tiny rows before scaling.
 Next gates are 100 then 1000 core trajectories.
+
+The 100-row gate also passed: train/val/test = 80/10/10, 16 direct,
+40 clean, 30 hard-negative, 10 noisy and 4 insufficient (per-split integer rounding).
+Hard-negative support positions = 10/10/10. Duplicate IDs/questions and cross-split
+question/source-group leakage are all zero. Generator, validator and statistics were
+executed before expanding to 1000 rows.
