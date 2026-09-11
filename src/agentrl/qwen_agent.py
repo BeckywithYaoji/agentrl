@@ -16,12 +16,12 @@ class QwenAgent:
         self.model, self.tokenizer = load_qwen(adapter_path=adapter_path)
         self.max_tokens = max_tokens
 
-    def generate(self, messages, stop_actions=True):
+    def generate(self, messages, stop_actions=True, temperature=0.0, top_p=1.0):
         prompt = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
         output = ''
         stream = stream_generate(self.model, self.tokenizer, prompt=prompt,
-                                 max_tokens=self.max_tokens, sampler=make_sampler(temp=0.0))
+                                 max_tokens=self.max_tokens, sampler=make_sampler(temp=temperature, top_p=top_p))
         try:
             for chunk in stream:
                 output += chunk.text
