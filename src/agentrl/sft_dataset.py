@@ -1,16 +1,17 @@
 """Canonical, model-independent dataset construction and validation (no training)."""
 
-import hashlib
 import json
 import random
 import re
 import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
+from urllib.parse import unquote
 
 from scripts.minimal_search_demo import format_information
 
 SOURCE_URL = 'https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v2.0.json'
+SOURCE_SHA256 = '68dcfbb971bd3e96d5b46c7177b16c1a4e7d4bdef19fb204502738552dede002'
 LICENSE = 'CC-BY-SA-4.0'
 ABSTAIN = 'Insufficient information.'
 TASK_RATIOS = {'direct_answer': .15, 'single_search_clean': .40,
@@ -21,6 +22,10 @@ TASKS = set(TASK_RATIOS) | {'counterfactual', 'ood'}
 
 def normalize(text):
     return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', text).casefold()))
+
+
+def display_title(title):
+    return unquote(title).replace('_', ' ')
 
 
 def read_jsonl(path):
@@ -73,7 +78,7 @@ def query_for(question, title):
     stop = {'who', 'what', 'where', 'when', 'which', 'how', 'why', 'is', 'was',
             'were', 'are', 'did', 'does', 'do', 'the', 'a', 'an', 'of', 'in', 'to'}
     words = re.findall(r"[\w'-]+", question)
-    return title.replace('_', ' ') + ' ' + ' '.join(w for w in words if w.casefold() not in stop)
+    return display_title(title) + ' ' + ' '.join(w for w in words if w.casefold() not in stop)
 
 
 def make_sample(uid, question, task, answer, docs, source, source_item, source_group,
@@ -200,7 +205,7 @@ def build_main(source, size=1000, seed=42):
                 if item['paragraph_id'] in selected_paragraphs or normalize(item['question']) in used_questions:
                     continue
                 q, answer = item['question'], item['answer']
-                support = {'id': item['paragraph_id'], 'title': item['title'].replace('_', ' '),
+                support = {'id': item['paragraph_id'], 'title': display_title(item['title']),
                            'text': item['context'], 'is_support': not item['impossible']}
                 docs = [support]
                 if task in {'single_search_hard_negative', 'noisy_retrieval'}:
@@ -212,7 +217,7 @@ def build_main(source, size=1000, seed=42):
                     negatives.sort(key=lambda p: (-len(qterms & set(normalize(p['context']).split())), p['paragraph_id']))
                     if len(negatives) < 2:
                         continue
-                    docs = [{'id': p['paragraph_id'], 'title': p['title'].replace('_', ' '),
+                    docs = [{'id': p['paragraph_id'], 'title': display_title(p['title']),
                              'text': p['context'], 'is_support': False} for p in negatives[:2]]
                     if task == 'noisy_retrieval':
                         # A partial relevant sentence without the answer plus another same-topic passage.
@@ -228,7 +233,8 @@ def build_main(source, size=1000, seed=42):
                         schedule = [0, 1, 2]
                         rng.shuffle(schedule)
                     docs.insert(schedule[count % 3], support)
-                question = f"Regarding {item['title'].replace('_', ' ')}, {q[0].lower() + q[1:]}"
+                title = display_title(item['title'])
+                question = q if normalize(title) in normalize(q) else f"Regarding {title}, {q[0].lower() + q[1:]}"
                 row = make_sample('squad-' + item['id'], question, task, answer, docs,
                     'SQuAD-2.0-train', item['id'], item['title'], query_for(q, item['title']), seed, q)
                 row['metadata']['source_url'] = SOURCE_URL
@@ -256,6 +262,7 @@ def validate_sample(row):
     meta = row['metadata']
     require(isinstance(meta, dict) and all(k in meta for k in ['requires_search', 'search_count', 'correct_doc_position',
             'source', 'source_item', 'source_group', 'has_hard_negative', 'documents', 'license']), 'metadata fields')
+    require(all(isinstance(meta[k], str) and meta[k] for k in ['source', 'source_item', 'source_group', 'license']), 'source identifiers')
     msgs = row['messages']
     require(isinstance(msgs, list) and all(isinstance(m, dict) and isinstance(m.get('content'), str) for m in msgs), 'messages schema')
     direct = row['task_type'] == 'direct_answer'
@@ -287,6 +294,14 @@ def validate_sample(row):
             require(len(supports) == 1 and type(meta['correct_doc_position']) is int and supports[0] == meta['correct_doc_position'], 'correct_doc_position')
             require(normalize(row['answer']) in normalize(docs[supports[0]-1]['text']), 'answer absent from support')
             require(all(normalize(row['answer']) not in normalize(d['text']) for d in docs if not d['is_support']), 'distractor contains gold answer')
+            if meta['source'] == 'SQuAD-2.0-train':
+                annotations = meta.get('original_answers', [])
+                require(bool(annotations) and meta.get('source_is_impossible') is False, 'missing source answer annotation')
+                support = docs[supports[0]-1]
+                require(support['id'] == meta.get('source_paragraph'), 'source paragraph mismatch')
+                annotation = annotations[0]
+                start, text = annotation['answer_start'], annotation['text']
+                require(support['text'][start:start+len(text)] == text and text.strip() == row['answer'], 'source answer span mismatch')
     hard = row['task_type'] in {'single_search_hard_negative', 'counterfactual', 'ood'}
     require(type(meta['has_hard_negative']) is bool and meta['has_hard_negative'] == hard, 'hard-negative flag')
     if hard or row['task_type'] == 'noisy_retrieval':
@@ -310,6 +325,12 @@ def validate_splits(splits):
                 if key in keys and keys[key] != split:
                     raise ValueError(f'cross-split leakage: {key}')
                 keys[key] = split
+            if meta['source'] == 'SQuAD-2.0-train':
+                for document in meta['documents']:
+                    key = ('source_document', document['id'].removesuffix(':partial'))
+                    if key in keys and keys[key] != split:
+                        raise ValueError(f'cross-split source document leakage: {key}')
+                    keys[key] = split
     return {'sample_count': len(ids), 'duplicate_ids': 0,
             'duplicate_questions': sum(n-1 for n in questions.values()), 'cross_split_leakage': 0, 'group_leakage': 0}
 

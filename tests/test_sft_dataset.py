@@ -2,10 +2,13 @@ import copy
 import unittest
 
 from src.agentrl.sft_dataset import (ABSTAIN, counterfactual_set, group_split,
-    make_sample, observation, statistics, validate_sample, validate_splits)
+    make_sample, observation, statistics, validate_sample, validate_splits, display_title)
 
 
 class DatasetTest(unittest.TestCase):
+    def test_title_decoding(self):
+        self.assertEqual(display_title('Saint_Barth%C3%A9lemy'), 'Saint Barthélemy')
+
     def direct(self):
         return make_sample('d', 'What is 2 + 2?', 'direct_answer', '4', [], 'synthetic', 'd', 'd')
 

@@ -1,0 +1,4 @@
+{"id":"baseline-hamlet","question":"Who wrote Hamlet?","answer":"William Shakespeare","split":"baseline_eval","source":"Milestone 2B","training_allowed":false}
+{"id":"baseline-eiffel","question":"Where is the Eiffel Tower located?","answer":"Paris","split":"baseline_eval","source":"Milestone 2B","training_allowed":false}
+{"id":"baseline-relativity","question":"Who developed the theory of relativity?","answer":"Albert Einstein","split":"baseline_eval","source":"Milestone 2B","training_allowed":false}
+{"id":"baseline-xqz17","question":"Who wrote the fictional play XQZ-17?","answer":"Alice Example","split":"baseline_eval","source":"Milestone 2B fictional fixture","training_allowed":false}

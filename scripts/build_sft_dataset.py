@@ -2,12 +2,11 @@
 import argparse
 import hashlib
 import json
-import random
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.agentrl.sft_dataset import (SOURCE_URL, LICENSE, build_main, counterfactual_set,
+from src.agentrl.sft_dataset import (SOURCE_URL, SOURCE_SHA256, LICENSE, build_main, counterfactual_set,
     load_source, validate_splits, write_jsonl, statistics)
 
 
@@ -20,6 +19,8 @@ def main():
     args = parser.parse_args()
     if args.output.exists() and any(args.output.iterdir()):
         parser.error('output must be empty; use a fresh directory to preserve prior stages')
+    if hashlib.sha256(args.source.read_bytes()).hexdigest() != SOURCE_SHA256:
+        parser.error('source SHA256 does not match the reviewed official SQuAD 2.0 release')
     source = load_source(args.source)
     if args.size == 10:
         # Select 8 source/direct rows plus 2 counterfactuals, across all required tiny types.
