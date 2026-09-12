@@ -39,7 +39,17 @@ def emit(path, record):
     print(json.dumps(record, ensure_ascii=False, default=str), flush=True)
 
 
-def run(directory):
+def validate_checkpoint_fingerprints(before, after, reloaded):
+    before_params = before['parameters'] if isinstance(before, dict) else before[0]['parameters']
+    after_params = after['parameters'] if isinstance(after, dict) else after[0]['parameters']
+    reload_params = reloaded['parameters'] if isinstance(reloaded, dict) else reloaded[0]['parameters']
+    changed = [key for key in before_params if before_params[key]['slice_sha256'] != after_params[key]['slice_sha256']]
+    if not changed or after_params != reload_params:
+        raise RuntimeError('training change or fresh checkpoint reload fingerprint mismatch')
+    return changed
+
+
+def run(directory, *, checkpoint_root=None, reload_from=None):
     import numpy as np
     import pandas as pd
     import ray
@@ -95,10 +105,15 @@ def run(directory):
         config.trainer.nnodes = 1
         config.trainer.total_epochs = 1
         config.trainer.total_training_steps = 2
-        config.trainer.save_freq = -1
+        config.trainer.save_freq = 2 if checkpoint_root else -1
         config.trainer.test_freq = -1
         config.trainer.val_before_train = False
-        config.trainer.resume_mode = 'disable'
+        config.trainer.resume_mode = 'resume_path' if reload_from else 'disable'
+        if checkpoint_root:
+            config.trainer.default_local_dir = str(Path(checkpoint_root).resolve())
+        if reload_from:
+            config.trainer.resume_from_path = str(Path(reload_from).resolve())
+            config.trainer.del_local_ckpt_after_load = False
         config.trainer.logger = ['console']
         config.trainer.project_name = 'agentrl-r3c-smoke'
         config.trainer.experiment_name = 'two-step'
@@ -130,7 +145,7 @@ def run(directory):
     OmegaConf.save(config, directory / 'resolved.yaml')
     emit(trace, dict(event='config', model=snapshot, sample_id=source_row['id'],
                      question=question, gold=source_row['answer'], n=4, steps=2, lr=1e-6,
-                     train_source='data/sft/train.jsonl', checkpoint=False))
+                     train_source='data/sft/train.jsonl', checkpoint=bool(checkpoint_root), reload=bool(reload_from)))
 
     class BudgetClient(LLMServerClient):
         async def generate(self, *args, **kwargs):
@@ -243,7 +258,12 @@ def run(directory):
         trainer = GatedTrainer(config)
         trainer.init()
         before = trainer.actor_rollout_wg.probe_actor(fingerprint=True)
-        emit(trace, dict(event='fingerprint_before', state=before))
+        emit(trace, dict(event='fingerprint_before' if not reload_from else 'fingerprint_reloaded', state=before))
+        if reload_from:
+            report = dict(checkpoint_path=str(Path(reload_from).resolve()),
+                          global_step=trainer.global_steps, fingerprint_reloaded=before)
+            (directory / 'report.json').write_text(json.dumps(report, indent=2, default=str))
+            return
         manager = AgentLoopManagerTQ.create(config=config, llm_client=trainer.get_llm_client(),
             teacher_client=trainer.get_teacher_client(),
             reward_loop_worker_handles=trainer.get_reward_handles())
@@ -255,11 +275,14 @@ def run(directory):
         changed = [key for key in before_params if before_params[key]['slice_sha256'] != after_params[key]['slice_sha256']]
         steps = after['optimizer_steps'] if isinstance(after, dict) else after[0]['optimizer_steps']
         report = dict(decision='PASS' if steps == 2 and changed else 'BLOCKED',
+                      checkpoint_path=str((Path(checkpoint_root) / 'global_step_2').resolve()) if checkpoint_root else None,
                       optimizer_steps=steps, global_step=trainer.global_steps,
                       changed_parameters=changed, fingerprint_before=before,
                       fingerprint_after=after, gpu_peak_memory_mib=max(memory))
         emit(trace, dict(event='result', **report))
         (directory / 'report.json').write_text(json.dumps(report, indent=2, default=str))
+        if checkpoint_root and not (Path(checkpoint_root) / 'global_step_2' / 'actor').is_dir():
+            raise RuntimeError('native veRL checkpoint actor directory missing')
         if report['decision'] != 'PASS':
             raise RuntimeError('optimizer/fingerprint criteria not satisfied')
     finally:
@@ -277,11 +300,17 @@ def run(directory):
 
 
 def main():
-    directory = Path('artifacts/milestone5br3c') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
-    directory.mkdir(parents=True)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--checkpoint-root')
+    parser.add_argument('--reload-from')
+    parser.add_argument('--artifact-dir')
+    args = parser.parse_args()
+    directory = Path(args.artifact_dir) if args.artifact_dir else Path('artifacts/milestone5br3c') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+    directory.mkdir(parents=True, exist_ok=True)
     os.environ['AGENTRL_R3C_ARTIFACT'] = str(directory.resolve())
     try:
-        run(directory)
+        run(directory, checkpoint_root=args.checkpoint_root, reload_from=args.reload_from)
     except Exception:
         import traceback
         (directory / 'error.txt').write_text(traceback.format_exc())
