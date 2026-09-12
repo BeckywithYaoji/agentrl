@@ -22,7 +22,7 @@ def audit_tokens(prompt_ids, response_ids, response_mask, generations):
     return sum(expected_mask), len(expected_mask) - sum(expected_mask)
 
 
-async def smoke(directory):
+async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, top_p=1.0):
     import numpy as np
     import ray
     import verl
@@ -38,7 +38,11 @@ async def smoke(directory):
     from agentrl.verl_agent_loop import build_information
     from agentrl.verl_r0_reward import compute_score
 
+    rollout_index = None
+
     def emit(record):
+        if 'sample_id' in record:
+            record['rollout_index'] = rollout_index
         with (directory / 'trace.jsonl').open('a') as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + '\n')
         print(json.dumps(record, ensure_ascii=False), flush=True)
@@ -61,7 +65,7 @@ async def smoke(directory):
             tensor_model_parallel_size=1, prompt_length=1024, response_length=4096,
             max_model_len=6144, max_num_batched_tokens=6144, max_num_seqs=2,
             enforce_eager=True, load_format='safetensors', gpu_memory_utilization=0.5,
-            temperature=0.0, calculate_log_probs=False).items():
+            temperature=temperature, top_p=top_p, top_k=-1, calculate_log_probs=False).items():
             rollout[key] = value
         rollout.agent.agent_loop_config_path = str(loop_config.resolve())
         rollout.agent.default_agent_loop = 'search_xml'
@@ -103,6 +107,12 @@ async def smoke(directory):
                                     capture_output=True, text=True, check=True)
             memory.append(int(result.stdout.strip().splitlines()[0]))
             stop.wait(0.2)
+    # Freeze candidates before server startup; selection never sees rollout rewards.
+    with Path('data/sft/train.jsonl').open() as handle:
+        samples = [json.loads(next(handle)) for _ in range(candidate_count)]
+    emit(dict(event='fixed_candidates', selection='first rows in train.jsonl file order',
+              sample_ids=[s['id'] for s in samples], group_size=group_size,
+              temperature=temperature, top_p=top_p, top_k=-1, max_tokens=256))
     monitor_thread = threading.Thread(target=monitor, daemon=True)
     monitor_thread.start()
     ray.init(num_cpus=8, include_dashboard=False)
@@ -114,11 +124,8 @@ async def smoke(directory):
                   server_manager=type(manager).__name__, snapshot=snapshot, corpus_size=len(corpus),
                   no_trainable_actor=True, reminder=reminder))
         TinyBM25Retriever.retrieve = recorded_retrieve
-        # Read only training rows. Gold answers remain local until post-rollout scoring.
-        with Path('data/sft/train.jsonl').open() as handle:
-            samples = [json.loads(next(handle)) for _ in range(2)]
         completed = []
-        for sample in samples:
+        for sample, rollout_index in [(s, i) for s in samples for i in range(group_size)]:
             sample_id = sample['id']
             question = next(m['content'] for m in sample['messages'] if m['role'] == 'user')
             calls, captured, retrievals = [], [], []
