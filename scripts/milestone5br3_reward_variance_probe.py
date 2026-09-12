@@ -25,12 +25,13 @@ def summarize_groups(records, group_size):
     return result
 
 
-def main():
+def main(*, answer_reminder='', artifact_root='artifacts/milestone5br3b3'):
     from scripts.milestone5br3_native_rollout import smoke
-    directory = Path('artifacts/milestone5br3b3') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+    directory = Path(artifact_root) / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
     directory.mkdir(parents=True)
     try:
-        asyncio.run(smoke(directory, candidate_count=4, group_size=4, temperature=1.0, top_p=1.0))
+        asyncio.run(smoke(directory, candidate_count=4, group_size=4, temperature=1.0, top_p=1.0,
+                          answer_reminder=answer_reminder))
         records = [json.loads(line) for line in (directory / 'trace.jsonl').read_text().splitlines()]
         groups = summarize_groups(records, 4)
         fixed = next(r for r in records if r['event'] == 'fixed_candidates')

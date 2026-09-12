@@ -22,7 +22,7 @@ def audit_tokens(prompt_ids, response_ids, response_mask, generations):
     return sum(expected_mask), len(expected_mask) - sum(expected_mask)
 
 
-async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, top_p=1.0):
+async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, top_p=1.0, answer_reminder=''):
     import numpy as np
     import ray
     import verl
@@ -51,6 +51,8 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
     reminder = ('Use the search tool to verify facts before answering. Output only one '
                 '<search>query</search> or <answer>answer</answer> action per turn. '
                 'After receiving information, answer using the evidence if it is sufficient.')
+    if answer_reminder:
+        reminder += '\n' + answer_reminder
     config_dir = str(Path(verl.__file__).parent / 'trainer/config')
     snapshot = snapshot_download('Qwen/Qwen3-0.6B', local_files_only=True)
     loop_config = directory / 'agent.yaml'
