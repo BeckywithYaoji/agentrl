@@ -22,7 +22,7 @@ def audit_tokens(prompt_ids, response_ids, response_mask, generations):
     return sum(expected_mask), len(expected_mask) - sum(expected_mask)
 
 
-async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, top_p=1.0, answer_reminder=''):
+async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, top_p=1.0, answer_reminder='', model_path=None):
     import numpy as np
     import ray
     import verl
@@ -37,6 +37,7 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
     from agentrl.reward import parse_trajectory
     from agentrl.verl_agent_loop import build_information
     from agentrl.verl_r0_reward import compute_score
+    from agentrl.verl_reward_adapter import reward_extra_info
 
     rollout_index = None
 
@@ -54,7 +55,7 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
     if answer_reminder:
         reminder += '\n' + answer_reminder
     config_dir = str(Path(verl.__file__).parent / 'trainer/config')
-    snapshot = snapshot_download('Qwen/Qwen3-0.6B', local_files_only=True)
+    snapshot = model_path or snapshot_download('Qwen/Qwen3-0.6B', local_files_only=True)
     loop_config = directory / 'agent.yaml'
     OmegaConf.save(OmegaConf.create([dict(name='search_xml',
         _target_='agentrl.verl_agent_loop.SearchXMLAgentLoop', max_search_steps=3)]), loop_config)
@@ -89,6 +90,7 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
     class RecordingWorker(AgentLoopWorker):
         async def _agent_loop_postprocess(self, output, validate, **kwargs):
             captured.append(output)
+            captured_extras.append(kwargs.get('extra_info'))
             return await super()._agent_loop_postprocess(output, validate, **kwargs)
 
     # Instrument only retrieval; native worker owns instantiation and lifecycle.
@@ -130,13 +132,16 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
         for sample, rollout_index in [(s, i) for s in samples for i in range(group_size)]:
             sample_id = sample['id']
             question = next(m['content'] for m in sample['messages'] if m['role'] == 'user')
-            calls, captured, retrievals = [], [], []
+            calls, captured, captured_extras, retrievals = [], [], [], []
             messages = [{'role': 'system', 'content': SEARCH_PROMPT + '\n' + reminder},
                         {'role': 'user', 'content': question}]
             raw = np.empty(1, dtype=object)
             raw[0] = messages
+            extra = np.empty(1, dtype=object)
+            extra[0] = reward_extra_info(sample)
             batch = DataProto.from_dict(non_tensors={'raw_prompt': raw,
-                'index': np.array([0]), 'uid': np.array([sample_id], dtype=object)})
+                'index': np.array([0]), 'uid': np.array([sample_id], dtype=object),
+                'extra_info': extra})
             await worker.generate_sequences(batch)
             output = captured[0]
             assistant_count, observation_count = audit_tokens(
@@ -155,6 +160,8 @@ async def smoke(directory, *, candidate_count=2, group_size=1, temperature=0.0, 
             completed.append(chain)
             emit(dict(event='trajectory', sample_id=sample_id, question=question, turns=turns,
                 final_answer=parsed.answer, R0=compute_score('train', {'turns': turns}, sample['answer']),
+                native_solution_str=worker.tokenizer.decode(output.response_ids, skip_special_tokens=True),
+                reward_extra_info=captured_extras[0],
                 loop_success=loop_success, protocol_valid=parsed.protocol_valid,
                 complete_search_chain=chain, num_turns=output.num_turns, search_count=len(retrievals),
                 prompt_ids_length=len(output.prompt_ids), response_ids_length=len(output.response_ids),

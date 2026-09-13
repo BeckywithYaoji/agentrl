@@ -51,6 +51,12 @@ def parse_trajectory(raw_trajectory, termination_reason=""):
         termination_reason = raw_trajectory.get("termination_reason", termination_reason)
     else:
         text = str(raw_trajectory or "")
+        # veRL decodes both assistant tokens and user <information> observations
+        # into solution_str. Remove only the environment span and its chat roles.
+        text = re.sub(r"(?:\s*user\s*)?<information>.*?</information>(?:\s*assistant\s*)?",
+                      "", text, flags=re.S)
+        # Qwen may emit an empty thinking envelope with thinking disabled.
+        text = re.sub(r"<think>\s*</think>\s*", "", text)
     actions = tuple((m.group(1), m.group(2).strip()) for m in ACTION_RE.finditer(text))
     malformed = bool(re.search(r"<(?:search|answer)(?:\s|>)|</(?:search|answer)", text)) and not actions
     answer_actions = [a for a in actions if a[0] == "answer"]
