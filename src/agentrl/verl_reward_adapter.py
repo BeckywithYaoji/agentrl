@@ -1,5 +1,5 @@
 """Thin CPU-safe adapter for Search-R1/veRL-style reward callbacks."""
-from .reward import compute_reward
+from agentrl.reward import compute_reward
 
 
 def reward_extra_info(sample):
