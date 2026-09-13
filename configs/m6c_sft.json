@@ -1,0 +1,23 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "seed": 42,
+  "epochs": 2,
+  "max_seq_length": 1600,
+  "micro_batch_size": 1,
+  "gradient_accumulation_steps": 8,
+  "learning_rate": 1e-5,
+  "warmup_ratio": 0.03,
+  "weight_decay": 0.01,
+  "gradient_clip_norm": 1.0,
+  "precision": "bf16",
+  "optimizer": "AdamW",
+  "validation_interval_steps": 93,
+  "selection": "minimum token-weighted val teacher-forced loss; ties keep earlier checkpoint",
+  "validation_diagnostic_size": 10,
+  "locked_val_size": 100,
+  "generation_max_new_tokens": 256,
+  "generation_temperature": 0,
+  "max_search_steps": 3,
+  "retrieval_corpus": "data/sft/train.jsonl",
+  "checkpoint_dir": "/root/autodl-tmp/checkpoints/agentrl_m6c/best"
+}
