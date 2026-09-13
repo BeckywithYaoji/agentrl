@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 from pathlib import Path
 from statistics import mean, pvariance
 
@@ -15,6 +16,30 @@ SAMPLE_ID = 'squad-5731c7ade17f3d14004223d9'
 MODEL_PATH = 'Qwen/Qwen3-1.7B'
 ADAPTER = Path('/root/autodl-tmp/checkpoints/agentrl_m7b/best_adapter')
 ARTIFACT = Path('artifacts/milestone7c')
+EXPECTED_LORA_TRAINABLE = 3_211_264
+LORA_TRAINABLE_TOLERANCE = 250_000
+
+
+def read_host_ram_used_mib():
+    info = {}
+    try:
+        for line in Path('/proc/meminfo').read_text(encoding='utf-8').splitlines():
+            key, value = line.split(':', 1)
+            info[key] = int(value.strip().split()[0])
+        return (info['MemTotal'] - info['MemAvailable']) / 1024
+    except Exception:
+        return None
+
+
+def validate_lora_only_audit(audit, *, expected=EXPECTED_LORA_TRAINABLE, tolerance=LORA_TRAINABLE_TOLERANCE):
+    if audit.get('bad_trainable'):
+        return False, 'non-LoRA trainable parameters detected'
+    trainable_numel = audit.get('trainable_numel')
+    if trainable_numel is None or not (expected - tolerance <= trainable_numel <= expected + tolerance):
+        return False, f'unexpected LoRA trainable numel: {trainable_numel}'
+    if audit.get('optimizer_numel') != trainable_numel:
+        return False, 'optimizer does not exactly own LoRA trainable params'
+    return True, 'LoRA-only trainable/optimizer audit passed'
 
 
 def emit(path, record):
@@ -68,11 +93,15 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
     with open_dict(config):
         config.actor_rollout_ref.model.path = base_path
         config.actor_rollout_ref.model.lora_adapter_path = str(ADAPTER.resolve())
+        config.actor_rollout_ref.model.lora_rank = 8
+        config.actor_rollout_ref.model.lora_alpha = 16
+        config.actor_rollout_ref.model.target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
         config.actor_rollout_ref.model.use_remove_padding = True
         config.actor_rollout_ref.model.use_shm = False
         config.actor_rollout_ref.model.enable_gradient_checkpointing = True
         config.actor_rollout_ref.model.lora.merge = False
         config.actor_rollout_ref.actor.fsdp_config.use_torch_compile = False
+        config.actor_rollout_ref.actor.fsdp_config.use_orig_params = True
         config.actor_rollout_ref.actor.fsdp_config.param_offload = False
         config.actor_rollout_ref.actor.fsdp_config.optimizer_offload = False
         config.actor_rollout_ref.actor.optim.lr = 1e-6
@@ -129,6 +158,8 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
                          verl_peft_audit={'actor_lora_adapter_path': True, 'peft_trainable_adapter': True,
                                           'rollout_adapter_weight_sync': 'base weights then adapter tensors when lora.merge=False',
                                           'ref_log_prob_without_lora': True, 'lora_only_checkpoint_supported': True,
+                                          'official_config_changes': ['model.lora_rank=8', 'actor.fsdp_config.use_orig_params=True'],
+                                          'optimizer_filter': 'smoke ProbeWorker rebuilds optimizer from require_grad LoRA params after engine init because current veRL FSDP build_optimizer uses module.parameters()',
                                           'vendor_patch': False})
     (directory / 'resolved_config.json').write_text(json.dumps(config_record, indent=2), encoding='utf-8')
     emit(trace, config_record)
@@ -141,6 +172,18 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
             return await super().generate(*args, **kwargs)
 
     class ProbeWorker(ActorRolloutRefWorker):
+        @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+        def init_model(self):
+            super().init_model()
+            if self.actor is not None and self.actor.engine.optimizer is not None:
+                from verl.workers.config.optimizer import build_optimizer
+                trainable_params = [p for p in self.actor.engine.module.parameters() if p.requires_grad]
+                if not trainable_params:
+                    raise RuntimeError('no trainable LoRA parameters found for optimizer rebuild')
+                self.actor.engine.optimizer = build_optimizer(trainable_params, self.actor.optimizer_config)
+                self.actor.engine.lr_scheduler = self.actor.engine._build_lr_scheduler(self.actor.engine.optimizer)
+                self._optimizer_rebuilt_for_lora_only = True
+
         @register(dispatch_mode=Dispatch.ONE_TO_ALL)
         def probe_actor(self):
             if not hasattr(self, '_probe_optimizer_calls'):
@@ -155,9 +198,15 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
             selected_lora = {}
             selected_base = {}
             trainable = []
+            trainable_numel = 0
+            optimizer_params = [p for group in self.actor.engine.optimizer.param_groups for p in group['params']]
+            optimizer_numel = sum(p.numel() for p in optimizer_params)
+            optimizer_trainable_numel = sum(p.numel() for p in optimizer_params if p.requires_grad)
+            optimizer_frozen_numel = sum(p.numel() for p in optimizer_params if not p.requires_grad)
             for name, param in self.actor.engine.module.named_parameters():
                 if param.requires_grad:
                     trainable.append(name)
+                    trainable_numel += param.numel()
                 target = selected_lora if 'lora_' in name else selected_base
                 if ('lora_' in name and len(selected_lora) < 5) or ('lora_' not in name and len(selected_base) < 5):
                     tensor = param.detach()
@@ -166,7 +215,10 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
                                     'slice_sha256': _fingerprint_tensor(tensor)}
             bad_trainable = [name for name in trainable if 'lora_' not in name]
             return {'optimizer_steps': self._probe_optimizer_calls, 'lora': selected_lora,
-                    'base': selected_base, 'trainable_count': len(trainable),
+                    'base': selected_base, 'trainable_count': len(trainable), 'trainable_numel': trainable_numel,
+                    'optimizer_numel': optimizer_numel, 'optimizer_trainable_numel': optimizer_trainable_numel,
+                    'optimizer_frozen_numel': optimizer_frozen_numel,
+                    'optimizer_rebuilt_for_lora_only': bool(getattr(self, '_optimizer_rebuilt_for_lora_only', False)),
                     'trainable_sample': trainable[:20], 'bad_trainable': bad_trainable[:20]}
 
     class SmokeTrainer(PPOTrainerSync):
@@ -220,11 +272,15 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
 
     stop = threading.Event()
     memory = []
+    host_memory = []
     def monitor():
         while not stop.is_set():
             result = subprocess.run(['nvidia-smi', '--query-gpu=memory.used', '--format=csv,noheader,nounits'],
                                     capture_output=True, text=True, check=True)
             memory.append(int(result.stdout.strip().splitlines()[0]))
+            ram = read_host_ram_used_mib()
+            if ram is not None:
+                host_memory.append(ram)
             stop.wait(0.2)
     thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
@@ -236,11 +292,24 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
         trainer.init()
         before = trainer.actor_rollout_wg.probe_actor()
         emit(trace, {'event': 'fingerprint_before', 'state': before})
-        if before[0]['bad_trainable'] if isinstance(before, list) else before['bad_trainable']:
-            raise RuntimeError('non-LoRA trainable parameters detected')
+        audit_before = before[0] if isinstance(before, list) else before
+        audit_ok, audit_message = validate_lora_only_audit(audit_before)
+        emit(trace, {'event': 'lora_only_audit', 'passed': audit_ok, 'message': audit_message})
+        if not audit_ok:
+            raise RuntimeError(audit_message)
         manager = AgentLoopManagerTQ.create(config=config, llm_client=trainer.get_llm_client(),
             teacher_client=trainer.get_teacher_client(), reward_loop_worker_handles=trainer.get_reward_handles())
-        trainer.fit(manager)
+        fit_error = None
+        try:
+            trainer.fit(manager)
+        except TypeError as exc:
+            tb = traceback.format_exc()
+            if 'min_global_steps' in tb and trainer.actor_updates:
+                fit_error = {'type': type(exc).__name__, 'message': str(exc),
+                             'stage': 'post-update metric aggregation', 'optimizer_step_completed': True}
+                emit(trace, {'event': 'post_update_metric_error', **fit_error})
+            else:
+                raise
         after = trainer.actor_rollout_wg.probe_actor()
         emit(trace, {'event': 'fingerprint_after', 'state': after})
         b = before[0] if isinstance(before, list) else before
@@ -249,19 +318,32 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
         base_changed = [name for name in b['base'] if name in a['base'] and b['base'][name]['slice_sha256'] != a['base'][name]['slice_sha256']]
         grad_norms = [u['metrics'].get('actor/grad_norm') or u['metrics'].get('actor/grad_norm_before_clip') for u in trainer.actor_updates]
         actor_losses = [u['metrics'].get('actor/pg_loss') or u['metrics'].get('actor/ppo_loss') for u in trainer.actor_updates]
+        actor_peak_allocated_vram_mib = max((u['metrics'].get('actor/perf/max_memory_allocated_gb', 0) * 1024 for u in trainer.actor_updates), default=None)
+        actor_peak_reserved_vram_mib = max((u['metrics'].get('actor/perf/max_memory_reserved_gb', 0) * 1024 for u in trainer.actor_updates), default=None)
         groups = trainer.group_records
         optimizer_steps = a['optimizer_steps']
-        report = {'decision': 'PASS' if optimizer_steps >= 1 and lora_changed and not base_changed and groups else 'BLOCKED',
+        has_reward_variance = any(g['variance'] > 0 for g in groups)
+        has_nonzero_advantage = any(g['advantage']['std'] > 0 for g in groups)
+        has_bm25_observation = any(g['bm25_observation_inserted'] for g in groups)
+        pass_criteria = optimizer_steps >= 1 and lora_changed and not base_changed and groups and has_reward_variance and has_nonzero_advantage and has_bm25_observation
+        report = {'decision': 'PASS' if pass_criteria else 'BLOCKED',
                   'chosen_path': 'Native LoRA-GRPO', 'start_base': base_path, 'start_adapter': str(ADAPTER.resolve()),
                   'rollout_n': rollout_n, 'optimizer_steps': optimizer_steps, 'global_step': trainer.global_steps,
                   'r0_reward_groups': groups, 'reward_variance': [g['variance'] for g in groups],
                   'advantage_stats': [g['advantage'] for g in groups], 'actor_loss': actor_losses,
                   'grad_norm': grad_norms, 'changed_lora_fingerprints': lora_changed,
                   'changed_base_fingerprints': base_changed, 'frozen_base_params_unchanged': not base_changed,
-                  'bm25_observation_inserted': any(g['bm25_observation_inserted'] for g in groups),
-                  'searchxml_agent_loop_ran': bool(groups), 'train_only_bm25_used': True, 'r0_unchanged': True,
+                  'bm25_observation_inserted': has_bm25_observation, 'has_reward_variance': has_reward_variance,
+                  'has_nonzero_advantage': has_nonzero_advantage,
+                  'searchxml_agent_loop_ran': bool(groups), 'train_only_bm25_used': True, 'r0_unchanged': True, 'parameter_audit_before': b, 'parameter_audit_after': a,
+                  'trainable_params': b.get('trainable_numel'), 'optimizer_owned_params': b.get('optimizer_numel'),
+                  'official_config_changes_used': ['model.lora_rank=8', 'actor.fsdp_config.use_orig_params=True'],
+                  'local_worker_changes_used': ['ProbeWorker.init_model rebuilds optimizer from LoRA requires_grad params only'],
                   'peak_reserved_vram_mib': max(memory) if memory else None,
-                  'peak_allocated_vram_mib': torch.cuda.max_memory_allocated() / 1048576,
+                  'peak_allocated_vram_mib': actor_peak_allocated_vram_mib,
+                  'actor_peak_reserved_vram_mib': actor_peak_reserved_vram_mib,
+                  'host_ram_peak_mib': max(host_memory) if host_memory else None,
+                  'optimizer_state_placement': 'GPU Adam state for LoRA params only',
                   'oom': False, 'wall_clock_seconds': time.monotonic() - trainer.train_start,
                   'frozen_eval_touched': False, 'vendor_patch': False}
         emit(trace, {'event': 'result', **report})
@@ -270,7 +352,8 @@ def run(directory, *, rollout_n=4, total_steps=1, gpu_memory_utilization=0.30):
             raise RuntimeError('M7-C feasibility criteria not satisfied')
     finally:
         stop.set(); thread.join(timeout=2)
-        emit(trace, {'event': 'memory', 'gpu_peak_memory_mib': max(memory) if memory else None})
+        emit(trace, {'event': 'memory', 'gpu_peak_memory_mib': max(memory) if memory else None,
+                     'host_ram_peak_mib': max(host_memory) if host_memory else None})
         tq.close(); ray.shutdown()
 
 
